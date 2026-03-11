@@ -6,6 +6,7 @@ class BossStates(StatesGroup):
     main_menu = State()
     choosing_employee = State()
     choosing_rooms = State()
+    selecting_cleaning_type = State()  # выбор вида уборки для добавляемого номера
     adding_comment = State()
     room_management = State()
     room_add_name = State()

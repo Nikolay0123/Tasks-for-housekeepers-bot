@@ -25,14 +25,13 @@ from keyboards.inline import (
     after_send_kb,
     history_detail_back_kb,
 )
-from utils.helpers import format_area, format_employee_name, format_date_group
+from utils.helpers import format_area, format_employee_name, format_date_group, CLEANING_TYPES, format_cleaning_type
 
 router = Router()
 
-# --- Filter: only boss ---
-def boss_only(message: Message | CallbackQuery) -> bool:
-    user_id = message.from_user.id if message.from_user else None
-    return user_id == config.BOSS_ID
+# Только начальник (BOSS_ID) может использовать бота
+router.message.filter(lambda msg: msg.from_user is not None and msg.from_user.id == config.BOSS_ID)
+router.callback_query.filter(lambda cq: cq.from_user is not None and cq.from_user.id == config.BOSS_ID)
 
 
 # --- Main menu text ---
@@ -81,18 +80,20 @@ async def build_rooms_screen(
         lines.append("(пока пусто)")
     else:
         for i, r in enumerate(selected_rooms, 1):
-            lines.append(f"{i}. {r['name']} — {format_area(r['area'])} м²")
+            ct = format_cleaning_type(r.get("cleaning_type", "current"))
+            lines.append(f"{i}. {r['name']} — {format_area(r['area'])} м² ({ct})")
 
     text = "\n".join(lines)
 
-    # Build combined keyboard: queue buttons, then rooms (compact), then send/clear/back
+    # Клавиатура: по одной строке на каждый элемент очереди — только ⬆️ ⬇️ ❌ и смена типа
     builder = InlineKeyboardBuilder()
     for i, item in enumerate(selected_rooms):
+        ct = item.get("cleaning_type", "current")
         row = [
-            InlineKeyboardButton(text="⬆️", callback_data=f"queue_up_{i}"),
-            InlineKeyboardButton(text=f"{item['name']} — {item['area']:.0f} м²", callback_data="noop"),
-            InlineKeyboardButton(text="⬇️", callback_data=f"queue_down_{i}"),
-            InlineKeyboardButton(text="❌", callback_data=f"queue_del_{i}"),
+            InlineKeyboardButton(text="⬆️", callback_data=f"qup_{i}"),
+            InlineKeyboardButton(text="⬇️", callback_data=f"qdown_{i}"),
+            InlineKeyboardButton(text="🔄 " + format_cleaning_type(ct)[:8], callback_data=f"ct_{i}"),
+            InlineKeyboardButton(text="❌", callback_data=f"qdel_{i}"),
         ]
         builder.row(*row)
 
@@ -139,7 +140,8 @@ def format_channel_message(
     ]
     for i, r in enumerate(queue, 1):
         num_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][min(i - 1, 9)] if i <= 10 else f"{i}."
-        lines.append(f"{num_emoji} {r['name']} — {r['area']:.0f} м²")
+        ct = format_cleaning_type(r.get("cleaning_type", "current"))
+        lines.append(f"{num_emoji} {r['name']} — {r['area']:.0f} м² — {ct}")
 
     lines.extend([
         "",
@@ -209,7 +211,7 @@ async def employee_chosen(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
-# ---------- Choosing rooms: add room ----------
+# ---------- Choosing rooms: add room → сначала выбор вида уборки ----------
 @router.callback_query(F.data.startswith("room_add_"), BossStates.choosing_rooms)
 async def room_add_to_queue(cq: CallbackQuery, state: FSMContext):
     if cq.data == "room_add_":
@@ -217,19 +219,65 @@ async def room_add_to_queue(cq: CallbackQuery, state: FSMContext):
         return
     room_id = int(cq.data.replace("room_add_", ""))
     data = await state.get_data()
-    employee = data.get("current_employee")
-    selected = list(data.get("selected_rooms", []))
-
     sm = get_async_session_maker()
     async with sm() as session:
         result = await session.execute(select(Room).where(Room.id == room_id))
         room = result.scalars().first()
-        if not room:
-            await cq.answer("Помещение не найдено.")
-            return
-        selected.append({"id": room.id, "name": room.name, "area": room.area})
-        await state.update_data(selected_rooms=selected)
-        text, kb = await build_rooms_screen(session, employee, selected, data.get("comment"))
+    if not room:
+        await cq.answer("Помещение не найдено.")
+        return
+    await state.update_data(pending_room_id=room.id, pending_room_name=room.name, pending_room_area=room.area)
+    await state.set_state(BossStates.selecting_cleaning_type)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    builder = InlineKeyboardBuilder()
+    for key, label in CLEANING_TYPES.items():
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"ctype_{key}"))
+    builder.row(InlineKeyboardButton(text="🔙 Отмена", callback_data="ctype_cancel"))
+    await cq.message.edit_text(
+        f"👤 Выберите вид уборки для:\n<b>{room.name}</b> ({room.area:.2f} м²)",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("ctype_"), BossStates.selecting_cleaning_type)
+async def cleaning_type_chosen(cq: CallbackQuery, state: FSMContext):
+    if cq.data == "ctype_cancel":
+        await state.set_state(BossStates.choosing_rooms)
+        await state.update_data(pending_room_id=None, pending_room_name=None, pending_room_area=None)
+        data = await state.get_data()
+        sm = get_async_session_maker()
+        async with sm() as session:
+            text, kb = await build_rooms_screen(
+                session, data["current_employee"], data.get("selected_rooms", []), data.get("comment")
+            )
+        await cq.message.edit_text(text, reply_markup=kb)
+        await cq.answer()
+        return
+    # ctype_current, ctype_departure, ...
+    cleaning_type = cq.data.replace("ctype_", "")
+    if cleaning_type not in CLEANING_TYPES:
+        await cq.answer()
+        return
+    data = await state.get_data()
+    rid = data.get("pending_room_id")
+    rname = data.get("pending_room_name")
+    rarea = data.get("pending_room_area")
+    if rid is None:
+        await cq.answer("Ошибка. Выберите помещение снова.")
+        await state.set_state(BossStates.choosing_rooms)
+        return
+    selected = list(data.get("selected_rooms", []))
+    selected.append({"id": rid, "name": rname, "area": rarea, "cleaning_type": cleaning_type})
+    await state.update_data(selected_rooms=selected, pending_room_id=None, pending_room_name=None, pending_room_area=None)
+    await state.set_state(BossStates.choosing_rooms)
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], selected, data.get("comment")
+        )
     await cq.message.edit_text(text, reply_markup=kb)
     await cq.answer()
 
@@ -239,26 +287,33 @@ async def noop(cq: CallbackQuery):
     await cq.answer()
 
 
-# ---------- Queue: up / down / delete ----------
+# ---------- Queue: up / down / delete (короткие callback_data: qup_N, qdown_N, qdel_N) ----------
 def apply_queue_action(selected: list, action: str, index: int) -> list:
     selected = list(selected)
-    if action == "queue_up":
+    if action == "up":
         if index <= 0:
             return selected
         selected[index], selected[index - 1] = selected[index - 1], selected[index]
-    elif action == "queue_down":
+    elif action == "down":
         if index >= len(selected) - 1:
             return selected
         selected[index], selected[index + 1] = selected[index + 1], selected[index]
-    elif action == "queue_del":
+    elif action == "del":
         selected.pop(index)
     return selected
 
 
-@router.callback_query(F.data.regexp(r"^queue_(up|down|del)_(\d+)$"), BossStates.choosing_rooms)
+@router.callback_query(F.data.startswith("qup_"), BossStates.choosing_rooms)
+@router.callback_query(F.data.startswith("qdown_"), BossStates.choosing_rooms)
+@router.callback_query(F.data.startswith("qdel_"), BossStates.choosing_rooms)
 async def queue_action(cq: CallbackQuery, state: FSMContext):
-    parts = cq.data.split("_")
-    action, index = parts[1], int(parts[2])
+    prefix = "qup_" if cq.data.startswith("qup_") else "qdown_" if cq.data.startswith("qdown_") else "qdel_"
+    action = "up" if prefix == "qup_" else "down" if prefix == "qdown_" else "del"
+    try:
+        index = int(cq.data.replace(prefix, ""))
+    except ValueError:
+        await cq.answer()
+        return
     data = await state.get_data()
     selected = data.get("selected_rooms", [])
     if index < 0 or index >= len(selected):
@@ -270,6 +325,77 @@ async def queue_action(cq: CallbackQuery, state: FSMContext):
     async with sm() as session:
         text, kb = await build_rooms_screen(
             session, data["current_employee"], new_selected, data.get("comment")
+        )
+    await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+
+# ---------- Смена вида уборки для элемента очереди (ct_N → выбор типа → settype_N_X) ----------
+@router.callback_query(F.data.startswith("ct_"), BossStates.choosing_rooms)
+async def queue_change_type_show(cq: CallbackQuery, state: FSMContext):
+    try:
+        idx = int(cq.data.replace("ct_", ""))
+    except ValueError:
+        await cq.answer()
+        return
+    data = await state.get_data()
+    selected = data.get("selected_rooms", [])
+    if idx < 0 or idx >= len(selected):
+        await cq.answer()
+        return
+    builder = InlineKeyboardBuilder()
+    for key, label in CLEANING_TYPES.items():
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"settype_{idx}_{key}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="settype_back"))
+    await cq.message.edit_text(
+        f"Вид уборки для: <b>{selected[idx]['name']}</b>",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await state.update_data(editing_queue_index=idx)
+    await state.set_state(BossStates.selecting_cleaning_type)
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("settype_"), BossStates.selecting_cleaning_type)
+async def queue_set_type(cq: CallbackQuery, state: FSMContext):
+    if cq.data == "settype_back":
+        await state.set_state(BossStates.choosing_rooms)
+        data = await state.get_data()
+        sm = get_async_session_maker()
+        async with sm() as session:
+            text, kb = await build_rooms_screen(
+                session, data["current_employee"], data.get("selected_rooms", []), data.get("comment")
+            )
+        await cq.message.edit_text(text, reply_markup=kb)
+        await cq.answer()
+        return
+    # settype_2_departure
+    parts = cq.data.split("_")
+    if len(parts) != 3:
+        await cq.answer()
+        return
+    try:
+        idx = int(parts[1])
+        ctype = parts[2]
+    except (ValueError, IndexError):
+        await cq.answer()
+        return
+    if ctype not in CLEANING_TYPES:
+        await cq.answer()
+        return
+    data = await state.get_data()
+    selected = list(data.get("selected_rooms", []))
+    if idx < 0 or idx >= len(selected):
+        await cq.answer()
+        return
+    selected[idx]["cleaning_type"] = ctype
+    await state.update_data(selected_rooms=selected)
+    await state.set_state(BossStates.choosing_rooms)
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], selected, data.get("comment")
         )
     await cq.message.edit_text(text, reply_markup=kb)
     await cq.answer()
@@ -440,7 +566,8 @@ async def history_detail(cq: CallbackQuery, state: FSMContext):
         "Порядок уборки:",
     ]
     for i, r in enumerate(rooms, 1):
-        lines.append(f"  {i}. {r.get('name', '')} — {r.get('area', 0):.0f} м²")
+        ct = format_cleaning_type(r.get("cleaning_type", "current"))
+        lines.append(f"  {i}. {r.get('name', '')} — {r.get('area', 0):.0f} м² — {ct}")
     if task.comment:
         lines.append("")
         lines.append(f"💬 {task.comment}")
@@ -634,6 +761,8 @@ async def template_apply(cq: CallbackQuery, state: FSMContext):
             return
         rooms_data = json.loads(template.rooms_list)
         for r in rooms_data:
+            r = dict(r)
+            r.setdefault("cleaning_type", "current")
             selected.append(r)
         await state.update_data(selected_rooms=selected)
         text, kb = await build_rooms_screen(
