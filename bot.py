@@ -29,7 +29,7 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     # Only boss can use the bot
-    dp.include_router(boss_router, boss_only)
+    dp.include_router(boss_router)
 
     await init_db()
     await seed_rooms()
