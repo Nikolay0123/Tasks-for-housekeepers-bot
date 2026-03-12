@@ -330,6 +330,38 @@ async def queue_action(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
+@router.callback_query(F.data.startswith("queue_up_"), BossStates.choosing_rooms)
+@router.callback_query(F.data.startswith("queue_down_"), BossStates.choosing_rooms)
+@router.callback_query(F.data.startswith("queue_del_"), BossStates.choosing_rooms)
+async def queue_action_legacy(cq: CallbackQuery, state: FSMContext):
+    """Поддержка старых callback_data вида queue_up_N / queue_down_N / queue_del_N."""
+    if cq.data.startswith("queue_up_"):
+        prefix, action = "queue_up_", "up"
+    elif cq.data.startswith("queue_down_"):
+        prefix, action = "queue_down_", "down"
+    else:
+        prefix, action = "queue_del_", "del"
+    try:
+        index = int(cq.data.replace(prefix, ""))
+    except ValueError:
+        await cq.answer()
+        return
+    data = await state.get_data()
+    selected = data.get("selected_rooms", [])
+    if index < 0 or index >= len(selected):
+        await cq.answer()
+        return
+    new_selected = apply_queue_action(selected, action, index)
+    await state.update_data(selected_rooms=new_selected)
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], new_selected, data.get("comment")
+        )
+    await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+
 # ---------- Смена вида уборки для элемента очереди (ct_N → выбор типа → settype_N_X) ----------
 @router.callback_query(F.data.startswith("ct_"), BossStates.choosing_rooms)
 async def queue_change_type_show(cq: CallbackQuery, state: FSMContext):

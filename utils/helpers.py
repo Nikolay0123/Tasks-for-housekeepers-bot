@@ -23,6 +23,7 @@ def format_date_group(d: date) -> str:
 # Виды уборки для каждого номера
 CLEANING_TYPES = {
     "current": "текущая",
+    "current_linen": "текущая/смена белья",
     "departure": "выезд",
     "departure_arrival": "выезд/заезд",
     "general": "генеральная",
