@@ -1,5 +1,18 @@
 """Helper functions."""
 from datetime import datetime, date, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aiogram.types import CallbackQuery
+
+
+async def safe_answer(cq: "CallbackQuery", text: str | None = None, **kwargs) -> None:
+    """Ответ на callback без падения при устаревшем query (query is too old)."""
+    from aiogram.exceptions import TelegramBadRequest
+    try:
+        await cq.answer(text=text, **kwargs)
+    except TelegramBadRequest:
+        pass
 
 
 def format_area(value: float) -> str:
