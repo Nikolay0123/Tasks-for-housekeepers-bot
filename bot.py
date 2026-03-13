@@ -3,6 +3,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery
 
@@ -24,7 +25,9 @@ def boss_only(event: Message | CallbackQuery) -> bool:
 
 
 async def main():
-    bot = Bot(token=config.BOT_TOKEN)
+    # Увеличенный timeout для long polling (getUpdates ждёт до ~60 сек) и нестабильной сети
+    session = AiohttpSession(timeout=90.0)
+    bot = Bot(token=config.BOT_TOKEN, session=session)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
