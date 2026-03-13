@@ -785,3 +785,12 @@ async def template_apply(cq: CallbackQuery, state: FSMContext):
             session, data["current_employee"], selected, data.get("comment")
         )
     await cq.message.edit_text(text, reply_markup=kb)
+
+
+# ---------- Fallback: callback не попал ни в один обработчик (сбитое состояние FSM и т.п.) ----------
+@router.callback_query()
+async def callback_fallback(cq: CallbackQuery, state: FSMContext):
+    """Возврат в главное меню, чтобы следующее нажатие обработалось с первого раза."""
+    await safe_answer(cq)
+    await state.set_state(BossStates.main_menu)
+    await cq.message.edit_text(main_menu_text(), reply_markup=main_menu_kb())
