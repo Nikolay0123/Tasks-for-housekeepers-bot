@@ -28,9 +28,10 @@ def boss_only(event: Message | CallbackQuery) -> bool:
 class RetryAiohttpSession(AiohttpSession):
     """Сессия с повторными попытками при ServerDisconnectedError и других сетевых сбоях."""
 
-    def __init__(self, max_retries: int = 3, **kwargs) -> None:
+    def __init__(self, max_retries: int = 2, retry_delays: tuple[float, ...] = (0.2, 0.5), **kwargs) -> None:
         super().__init__(**kwargs)
         self._max_retries = max(1, max_retries)
+        self._retry_delays = retry_delays
 
     async def make_request(self, bot: Bot, method, timeout: int | None = None):
         last_error = None
@@ -40,9 +41,9 @@ class RetryAiohttpSession(AiohttpSession):
             except TelegramNetworkError as e:
                 last_error = e
                 if attempt < self._max_retries - 1:
-                    delay = 1.0 * (attempt + 1)
+                    delay = self._retry_delays[attempt] if attempt < len(self._retry_delays) else 0.5
                     logger.warning(
-                        "Telegram request failed (%s), retry in %.1fs (%d/%d)",
+                        "Telegram request failed (%s), retry in %.2fs (%d/%d)",
                         e.message, delay, attempt + 1, self._max_retries,
                     )
                     await asyncio.sleep(delay)
@@ -51,7 +52,7 @@ class RetryAiohttpSession(AiohttpSession):
 
 async def main():
     # Увеличенный timeout для long polling (getUpdates ждёт до ~60 сек) и нестабильной сети
-    session = RetryAiohttpSession(timeout=90.0, max_retries=3)
+    session = RetryAiohttpSession(timeout=90.0, max_retries=2, retry_delays=(0.2, 0.5))
     bot = Bot(token=config.BOT_TOKEN, session=session)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
