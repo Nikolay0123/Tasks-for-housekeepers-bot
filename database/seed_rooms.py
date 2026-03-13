@@ -53,7 +53,6 @@ INITIAL_ROOMS = [
 
 
 async def seed_rooms():
-    await init_db()
     sm = get_async_session_maker()
     async with sm() as session:
         result = await session.execute(select(Room).limit(1))
