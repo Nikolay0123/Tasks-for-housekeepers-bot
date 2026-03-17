@@ -316,8 +316,8 @@ async def cleaning_type_chosen(cq: CallbackQuery, state: FSMContext):
         await cq.answer("Ошибка. Выберите помещение снова.")
         await state.set_state(BossStates.choosing_rooms)
         return
-    # Для номеров 101–109 сначала спрашиваем вариант комплекта белья
-    if is_linen_room:
+    # Для номеров 101–109 спрашиваем вариант комплекта белья (кроме вида «текущая»)
+    if is_linen_room and cleaning_type != "current":
         await state.update_data(pending_cleaning_type=cleaning_type)
         await state.set_state(BossStates.selecting_linen_variant)
 
