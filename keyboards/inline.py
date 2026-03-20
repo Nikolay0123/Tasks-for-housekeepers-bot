@@ -27,6 +27,9 @@ def choose_employee_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="👩 ЛЕНА", callback_data="emp_lena"),
     )
     builder.row(
+        InlineKeyboardButton(text="👩 ОЛЯ", callback_data="emp_olya"),
+    )
+    builder.row(
         InlineKeyboardButton(text="🔙 ОТМЕНА", callback_data="cancel_to_menu"),
     )
     return builder.as_markup()
