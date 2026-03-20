@@ -3,11 +3,14 @@ import asyncio
 import logging
 
 import aiohttp
+from aiohttp import ClientTimeout
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
+from aiogram.filters import ExceptionTypeFilter
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import ErrorEvent, Message, CallbackQuery
 from aiogram.utils.backoff import BackoffConfig
 
 import config
@@ -20,6 +23,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Дефолтный клиент aiogram часто ~60 с total — при медленном канале до api.telegram.org
+# edit_message падает по таймауту; увеличиваем лимиты.
+TELEGRAM_HTTP_TIMEOUT = ClientTimeout(total=180, connect=60, sock_connect=60, sock_read=120)
 
 
 def boss_only(event: Message | CallbackQuery) -> bool:
@@ -34,6 +41,25 @@ async def main():
     # Only boss can use the bot
     dp.include_router(boss_router)
 
+    @dp.error(ExceptionTypeFilter(TelegramNetworkError))
+    async def on_telegram_network_error(event: ErrorEvent) -> bool:
+        """Не оставляем callback без ответа при таймауте к Telegram API."""
+        logger.warning(
+            "TelegramNetworkError while handling update: %s",
+            event.exception,
+            exc_info=event.exception,
+        )
+        cq = event.update.callback_query
+        if cq:
+            try:
+                await cq.answer(
+                    "Таймаут сети к Telegram. Повторите нажатие кнопки.",
+                    show_alert=True,
+                )
+            except Exception as ans_err:
+                logger.debug("Could not answer callback after network error: %r", ans_err)
+        return True
+
     await init_db()
     await seed_rooms()
 
@@ -46,7 +72,8 @@ async def main():
     attempt = 0
     while True:
         attempt += 1
-        bot = Bot(token=config.BOT_TOKEN)
+        session = AiohttpSession(timeout=TELEGRAM_HTTP_TIMEOUT)
+        bot = Bot(token=config.BOT_TOKEN, session=session)
         try:
             logger.info("Starting polling (attempt %s)...", attempt)
             await dp.start_polling(
