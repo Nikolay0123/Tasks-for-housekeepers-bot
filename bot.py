@@ -3,7 +3,6 @@ import asyncio
 import logging
 
 import aiohttp
-from aiohttp import ClientTimeout
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -24,9 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Дефолтный клиент aiogram часто ~60 с total — при медленном канале до api.telegram.org
-# edit_message падает по таймауту; увеличиваем лимиты.
-TELEGRAM_HTTP_TIMEOUT = ClientTimeout(total=180, connect=60, sock_connect=60, sock_read=120)
+# Дефолтный клиент aiogram часто ~60 с — при медленном канале edit_message падает по таймауту.
+# Важно: число секунд, не aiohttp.ClientTimeout — иначе start_polling падает:
+# int(bot.session.timeout + polling_timeout) не работает с ClientTimeout.
+TELEGRAM_HTTP_TIMEOUT_SECONDS = 180.0
 
 
 def boss_only(event: Message | CallbackQuery) -> bool:
@@ -72,7 +72,7 @@ async def main():
     attempt = 0
     while True:
         attempt += 1
-        session = AiohttpSession(timeout=TELEGRAM_HTTP_TIMEOUT)
+        session = AiohttpSession(timeout=TELEGRAM_HTTP_TIMEOUT_SECONDS)
         bot = Bot(token=config.BOT_TOKEN, session=session)
         try:
             logger.info("Starting polling (attempt %s)...", attempt)
