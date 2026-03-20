@@ -65,12 +65,16 @@ def room_linen_profile(room_name: str) -> str | None:
     return None
 
 
-# Цвет белья (4 этаж)
+# Цвет белья (4 этаж); «белое» — и для 4 этажа, и считается для комплектов 101–109 в итоге
 LINEN_COLORS: dict[str, str] = {
     "blue": "голубое",
     "gray": "серое",
     "stripe": "в полоску",
+    "white": "белое",
 }
+
+# Порядок строк в сводке «по цвету» в сообщении в канал
+LINEN_COLOR_ORDER: tuple[str, ...] = ("blue", "gray", "stripe", "white")
 
 
 def format_linen_color(key: str | None) -> str:

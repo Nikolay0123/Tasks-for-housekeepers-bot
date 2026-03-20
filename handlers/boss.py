@@ -34,6 +34,7 @@ from utils.helpers import (
     LINEN_PACKAGES,
     LINEN_PACKAGES_FLOOR4,
     LINEN_COLORS,
+    LINEN_COLOR_ORDER,
     format_linen_color,
     room_linen_profile,
     resolve_linen_profile,
@@ -178,6 +179,8 @@ def format_channel_message(
     ]
     # Итог по белью (накапливаем по всем номерам)
     linen_totals: dict[str, int] = defaultdict(int)
+    # Суммарное число единиц (позиций) по цвету: голубое / серое / в полоску / белое
+    linen_color_totals: dict[str, int] = {LINEN_COLORS[k]: 0 for k in LINEN_COLOR_ORDER}
 
     for i, r in enumerate(queue, 1):
         num_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][min(i - 1, 9)] if i <= 10 else f"{i}."
@@ -201,11 +204,17 @@ def format_channel_message(
 
         if isinstance(linen_variant, int):
             if profile == "floor4" and linen_variant in LINEN_PACKAGES_FLOOR4:
-                for item_name, qty in LINEN_PACKAGES_FLOOR4[linen_variant].items():
+                pkg = LINEN_PACKAGES_FLOOR4[linen_variant]
+                for item_name, qty in pkg.items():
                     linen_totals[item_name] += qty
+                ck = r.get("linen_color")
+                if ck in LINEN_COLORS:
+                    linen_color_totals[LINEN_COLORS[ck]] += sum(pkg.values())
             elif profile == "classic" and linen_variant in LINEN_PACKAGES:
-                for item_name, qty in LINEN_PACKAGES[linen_variant].items():
+                pkg = LINEN_PACKAGES[linen_variant]
+                for item_name, qty in pkg.items():
                     linen_totals[item_name] += qty
+                linen_color_totals["белое"] += sum(pkg.values())
 
     lines.extend([
         "",
@@ -221,6 +230,12 @@ def format_channel_message(
     if linen_totals:
         lines.append("")
         lines.append("🧺 БЕЛЬЁ (ИТОГО ПО ЗАДАНИЮ):")
+        lines.append("По цвету (всего единиц):")
+        for key in LINEN_COLOR_ORDER:
+            label = LINEN_COLORS[key]
+            lines.append(f"• {label}: {linen_color_totals[label]} шт.")
+        lines.append("")
+        lines.append("По наименованию:")
         for item_name, qty in linen_totals.items():
             lines.append(f"• {item_name}: {qty} шт.")
     if comment:
