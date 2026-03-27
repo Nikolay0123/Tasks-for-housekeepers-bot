@@ -7,6 +7,9 @@ class BossStates(StatesGroup):
     choosing_employee = State()
     choosing_rooms = State()
     selecting_cleaning_type = State()  # выбор вида уборки для добавляемого номера
+    selecting_bed_layout = State()  # разъединены / соединены (101–109, 401.1 …)
+    selecting_linen_variant = State()  # вариант расцветки 1,5 сп.
+    selecting_beds_count = State()  # сколько кроватей заправить
     adding_comment = State()
     room_management = State()
     room_add_name = State()
