@@ -44,6 +44,9 @@ from utils.helpers import (
 
 router = Router()
 
+# Keep room selection message compact, so action buttons stay visible.
+QUEUE_PREVIEW_LIMIT = 12
+
 # Только начальник (BOSS_ID) может использовать бота
 router.message.filter(lambda msg: msg.from_user is not None and msg.from_user.id == config.BOSS_ID)
 router.callback_query.filter(lambda cq: cq.from_user is not None and cq.from_user.id == config.BOSS_ID)
@@ -98,24 +101,20 @@ async def build_rooms_screen(
         f"👤 Задание для: {emp_name}",
         f"🏠 Лимит: {format_area(current_total)} / {format_area(limit)} м²",
         "",
-        "🏠 ДОСТУПНЫЕ ПОМЕЩЕНИЯ:",
+        "Нажмите на помещение в кнопках ниже, чтобы добавить/убрать его из очереди.",
+        "",
     ]
 
     result = await session.execute(select(Room).where(Room.is_active == True).order_by(Room.name))
     rooms = list(result.scalars().all())
     selected_ids = {r["id"] for r in selected_rooms}
 
-    # Table header
-    lines.append("Помещение\tПлощадь")
-    for r in rooms:
-        lines.append(f"{r.name}\t{format_area(r.area)}")
-
-    lines.append("")
     lines.append("📋 ОЧЕРЕДЬ УБОРКИ:")
     if not selected_rooms:
         lines.append("(пока пусто)")
     else:
-        for i, r in enumerate(selected_rooms, 1):
+        preview = selected_rooms[:QUEUE_PREVIEW_LIMIT]
+        for i, r in enumerate(preview, 1):
             ct = format_cleaning_type(r.get("cleaning_type", "current"))
             suffix = ""
             if resolve_linen_profile(r) == "floor4" and r.get("linen_variant") is not None:
@@ -127,6 +126,9 @@ async def build_rooms_screen(
                 bk = classic_variant2_beds_label(r.get("linen_beds"))
                 suffix = f" (вар.2, {bk} кров.)"
             lines.append(f"{i}. {r['name']} — {format_area(r['area'])} м² ({ct}){suffix}")
+        hidden = len(selected_rooms) - len(preview)
+        if hidden > 0:
+            lines.append(f"... и ещё {hidden} в очереди")
 
     text = "\n".join(lines)
 
