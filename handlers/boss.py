@@ -32,14 +32,22 @@ from utils.helpers import (
     CLEANING_TYPES,
     format_cleaning_type,
     LINEN_PACKAGES,
-    LINEN_PACKAGES_FLOOR4,
     LINEN_COLORS,
     LINEN_COLOR_ORDER,
     format_linen_color,
     room_linen_profile,
+    room_key_from_name,
     resolve_linen_profile,
     classic_linen_quantities,
     classic_variant2_beds_label,
+    FLOOR4_SPLIT_BED_ROOMS,
+    FLOOR4_SPLIT_JOINED_KIT,
+    FLOOR4_SPLIT_SEPARATED_FULL,
+    floor4_color_max_beds,
+    floor4_color_kit_full,
+    scale_linen_by_beds,
+    item_linen_totals,
+    item_linen_color_key,
 )
 
 router = Router()
@@ -61,15 +69,21 @@ def main_menu_text() -> str:
 
 
 def build_linen_variant_markup_and_header(room_name: str, linen_profile: str) -> tuple[str, InlineKeyboardMarkup]:
-    """Текст и клавиатура выбора варианта комплекта (classic = 101–109, floor4 = 4 этаж)."""
+    """Текст и клавиатура выбора варианта комплекта (classic = 101–109, floor4 = расцветки 1–4)."""
     builder = InlineKeyboardBuilder()
     if linen_profile == "floor4":
-        builder.row(InlineKeyboardButton(text="Вариант 1 (по 2 шт.)", callback_data="lset_1"))
-        builder.row(InlineKeyboardButton(text="Вариант 2 (по 3 шт.)", callback_data="lset_2"))
-        builder.row(InlineKeyboardButton(text="Вариант 3 (по 4 шт.)", callback_data="lset_3"))
+        builder.row(
+            InlineKeyboardButton(text="1 · Белый 1,5", callback_data="lset_1"),
+            InlineKeyboardButton(text="2 · Голубой", callback_data="lset_2"),
+        )
+        builder.row(
+            InlineKeyboardButton(text="3 · Серый", callback_data="lset_3"),
+            InlineKeyboardButton(text="4 · Полоска", callback_data="lset_4"),
+        )
         header = (
-            f"Выберите вариант комплектации белья для номера:\n<b>{room_name}</b>\n\n"
-            "Каждый вариант: простыня 1,5, пододеяльник 1,5, полотенце банное, полотенце 40×70."
+            f"Выберите вариант комплектации белья для:\n<b>{room_name}</b>\n\n"
+            "Варианты 1–4: простыня и пододеяльник 1,5 сп., наволочки, полотенца (по ТЗ). "
+            "Далее — сколько кроватей заправить."
         )
     else:
         builder.row(InlineKeyboardButton(text="Вариант 1", callback_data="lset_1"))
@@ -117,7 +131,21 @@ async def build_rooms_screen(
         for i, r in enumerate(preview, 1):
             ct = format_cleaning_type(r.get("cleaning_type", "current"))
             suffix = ""
-            if resolve_linen_profile(r) == "floor4" and r.get("linen_variant") is not None:
+            if resolve_linen_profile(r) == "floor4" and r.get("linen_kit"):
+                qparts: list[str] = []
+                if r.get("bed_layout") == "separated":
+                    qparts.append("разъед.")
+                elif r.get("bed_layout") == "joined":
+                    qparts.append("соед.")
+                v = r.get("linen_variant")
+                if isinstance(v, int) and v in (1, 2, 3, 4):
+                    qparts.append(f"вар.{v}")
+                bk = r.get("linen_beds")
+                if bk is not None:
+                    qparts.append(f"{bk} кр.")
+                if qparts:
+                    suffix = " (" + ", ".join(qparts) + ")"
+            elif resolve_linen_profile(r) == "floor4" and r.get("linen_variant") is not None:
                 lc = format_linen_color(r.get("linen_color"))
                 v = r.get("linen_variant")
                 if lc:
@@ -164,6 +192,26 @@ async def build_rooms_screen(
     return text, builder.as_markup()
 
 
+async def show_floor4_beds_pick(
+    cq: CallbackQuery,
+    state: FSMContext,
+    room_name: str,
+    max_beds: int,
+    header_html: str,
+) -> None:
+    await state.set_state(BossStates.selecting_floor4_beds_count)
+    builder = InlineKeyboardBuilder()
+    buttons = [InlineKeyboardButton(text=str(n), callback_data=f"f4bn_{n}") for n in range(1, max_beds + 1)]
+    for i in range(0, len(buttons), 4):
+        builder.row(*buttons[i : i + 4])
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="f4bed_cancel"))
+    await cq.message.edit_text(
+        header_html + f"\n\nСколько кроватей заправить? (от 1 до {max_beds})",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
 # --- Channel message format ---
 def format_channel_message(
     employee_key: str,
@@ -208,27 +256,31 @@ def format_channel_message(
                         if bk == 1
                         else " — кровати разъединены, застелить 2 кровати"
                     )
-            elif profile == "floor4":
+        if profile == "floor4":
+            bl = r.get("bed_layout")
+            if bl == "separated":
+                bed_config += " — кровати разъединены"
+            elif bl == "joined":
+                bed_config += " — кровати соединены"
+            if r.get("linen_beds") is not None:
+                bed_config += f", заправить {r['linen_beds']} кр."
+            if isinstance(linen_variant, int) and linen_variant in (1, 2, 3, 4) and r.get("linen_kit"):
+                bed_config += f", вариант белья {linen_variant}"
+            elif r.get("linen_color"):
                 col = format_linen_color(r.get("linen_color"))
                 if col:
-                    bed_config = f" — бельё: {col}"
+                    bed_config += f" — бельё: {col} (старый комплект {r.get('linen_variant')})"
 
         lines.append(f"{num_emoji} {r['name']} — {r['area']:.0f} м² — {ct}{bed_config}")
 
-        if isinstance(linen_variant, int):
-            if profile == "floor4" and linen_variant in LINEN_PACKAGES_FLOOR4:
-                pkg = LINEN_PACKAGES_FLOOR4[linen_variant]
-                for item_name, qty in pkg.items():
-                    linen_totals[item_name] += qty
-                ck = r.get("linen_color")
-                if ck in LINEN_COLORS:
-                    linen_color_totals[LINEN_COLORS[ck]] += sum(pkg.values())
-            elif profile == "classic" and linen_variant in LINEN_PACKAGES:
-                pkg = classic_linen_quantities(r)
-                if pkg:
-                    for item_name, qty in pkg.items():
-                        linen_totals[item_name] += qty
-                    linen_color_totals["белое"] += sum(pkg.values())
+        pkg = item_linen_totals(r)
+        if pkg:
+            ck = item_linen_color_key(r)
+            pkg_sum = sum(pkg.values())
+            if ck and ck in LINEN_COLORS:
+                linen_color_totals[LINEN_COLORS[ck]] += pkg_sum
+            for item_name, qty in pkg.items():
+                linen_totals[item_name] += qty
 
     lines.extend([
         "",
@@ -275,6 +327,8 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_variant2_beds)
 @router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_linen_color)
 @router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_linen_variant)
+@router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_floor4_bed_layout)
+@router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_floor4_beds_count)
 @router.callback_query(F.data == "cancel_to_menu", BossStates.selecting_cleaning_type)
 @router.callback_query(F.data == "cancel_to_menu", BossStates.choosing_employee)
 @router.callback_query(F.data == "cancel_to_menu", BossStates.choosing_rooms)
@@ -343,6 +397,7 @@ async def room_add_to_queue(cq: CallbackQuery, state: FSMContext):
         pending_room_area=room.area,
         pending_linen_profile=linen_profile,
         pending_cleaning_type=None,
+        pending_room_key=room_key_from_name(room.name),
     )
     await state.set_state(BossStates.selecting_cleaning_type)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -368,6 +423,9 @@ async def cleaning_type_chosen(cq: CallbackQuery, state: FSMContext):
             pending_room_name=None,
             pending_room_area=None,
             pending_linen_profile=None,
+            pending_room_key=None,
+            pending_floor4_mode=None,
+            pending_beds_max=None,
         )
         data = await state.get_data()
         sm = get_async_session_maker()
@@ -394,6 +452,23 @@ async def cleaning_type_chosen(cq: CallbackQuery, state: FSMContext):
         return
     # Номера с комплектом белья (101–109 или 4 этаж) — кроме вида «текущая»
     if linen_profile and cleaning_type != "current":
+        room_key = room_key_from_name(rname or "") or data.get("pending_room_key")
+        if linen_profile == "floor4" and room_key and room_key in FLOOR4_SPLIT_BED_ROOMS:
+            await state.update_data(pending_cleaning_type=cleaning_type, pending_room_key=room_key)
+            await state.set_state(BossStates.selecting_floor4_bed_layout)
+            cb = InlineKeyboardBuilder()
+            cb.row(
+                InlineKeyboardButton(text="Кровати разъединены", callback_data="f4bl_s"),
+                InlineKeyboardButton(text="Кровати соединены", callback_data="f4bl_j"),
+            )
+            cb.row(InlineKeyboardButton(text="🔙 Отмена", callback_data="f4lay_cancel"))
+            await cq.message.edit_text(
+                f"🛏️ Расположение кроватей для:\n<b>{rname}</b>\n\n({format_cleaning_type(cleaning_type)})",
+                reply_markup=cb.as_markup(),
+                parse_mode="HTML",
+            )
+            await cq.answer()
+            return
         await state.update_data(pending_cleaning_type=cleaning_type)
         await state.set_state(BossStates.selecting_linen_variant)
         header, markup = build_linen_variant_markup_and_header(rname, linen_profile)
@@ -418,6 +493,9 @@ async def cleaning_type_chosen(cq: CallbackQuery, state: FSMContext):
         pending_room_area=None,
         pending_linen_profile=None,
         pending_cleaning_type=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
     )
     await state.set_state(BossStates.choosing_rooms)
     sm = get_async_session_maker()
@@ -441,6 +519,9 @@ async def linen_variant_chosen(cq: CallbackQuery, state: FSMContext):
             pending_linen_profile=None,
             pending_cleaning_type=None,
             pending_linen_variant=None,
+            pending_room_key=None,
+            pending_floor4_mode=None,
+            pending_beds_max=None,
         )
         data = await state.get_data()
         sm = get_async_session_maker()
@@ -471,17 +552,24 @@ async def linen_variant_chosen(cq: CallbackQuery, state: FSMContext):
         return
 
     if linen_profile == "floor4":
-        await state.update_data(pending_linen_variant=variant)
-        await state.set_state(BossStates.selecting_linen_color)
-        cb = InlineKeyboardBuilder()
-        for key, label in LINEN_COLORS.items():
-            cb.row(InlineKeyboardButton(text=label, callback_data=f"lcol_{key}"))
-        cb.row(InlineKeyboardButton(text="🔙 Назад к вариантам", callback_data="lcol_cancel"))
-        await cq.message.edit_text(
-            f"Цвет белья для <b>{rname}</b> (комплект вариант {variant}):",
-            reply_markup=cb.as_markup(),
-            parse_mode="HTML",
+        room_key = data.get("pending_room_key") or room_key_from_name(rname or "")
+        if room_key and room_key in FLOOR4_SPLIT_BED_ROOMS:
+            await cq.answer("Для этого номера сначала выбирается расположение кроватей.", show_alert=True)
+            return
+        max_b = floor4_color_max_beds(room_key)
+        if not max_b or variant not in (1, 2, 3, 4):
+            await cq.answer("Не удалось определить комплект для этого номера.", show_alert=True)
+            return
+        await state.update_data(
+            pending_linen_variant=variant,
+            pending_floor4_mode="color",
+            pending_beds_max=max_b,
         )
+        hdr = (
+            f"🧺 <b>{rname}</b>\n"
+            f"Вариант комплекта: {variant}\n\n({format_cleaning_type(cleaning_type)})"
+        )
+        await show_floor4_beds_pick(cq, state, rname or "", max_b, hdr)
         await cq.answer()
         return
 
@@ -529,9 +617,212 @@ async def linen_variant_chosen(cq: CallbackQuery, state: FSMContext):
         pending_linen_profile=None,
         pending_cleaning_type=None,
         pending_linen_variant=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
     )
     await state.set_state(BossStates.choosing_rooms)
 
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], selected, data.get("comment")
+        )
+    await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+
+@router.callback_query(F.data == "f4lay_cancel", BossStates.selecting_floor4_bed_layout)
+async def floor4_layout_cancel(cq: CallbackQuery, state: FSMContext):
+    await state.set_state(BossStates.choosing_rooms)
+    await state.update_data(
+        pending_room_id=None,
+        pending_room_name=None,
+        pending_room_area=None,
+        pending_linen_profile=None,
+        pending_cleaning_type=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
+    )
+    data = await state.get_data()
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], data.get("selected_rooms", []), data.get("comment")
+        )
+    await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+
+@router.callback_query(F.data.in_({"f4bl_s", "f4bl_j"}), BossStates.selecting_floor4_bed_layout)
+async def floor4_split_layout_chosen(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rid = data.get("pending_room_id")
+    rname = data.get("pending_room_name")
+    rarea = data.get("pending_room_area")
+    cleaning_type = data.get("pending_cleaning_type")
+    if rid is None or cleaning_type is None:
+        await cq.answer("Ошибка. Добавьте номер снова.", show_alert=True)
+        await state.set_state(BossStates.choosing_rooms)
+        return
+    if cq.data == "f4bl_j":
+        selected = list(data.get("selected_rooms", []))
+        selected.append(
+            {
+                "id": rid,
+                "name": rname,
+                "area": rarea,
+                "cleaning_type": cleaning_type,
+                "linen_profile": "floor4",
+                "bed_layout": "joined",
+                "linen_beds": 1,
+                "linen_kit": dict(FLOOR4_SPLIT_JOINED_KIT),
+            }
+        )
+        await state.update_data(
+            selected_rooms=selected,
+            pending_room_id=None,
+            pending_room_name=None,
+            pending_room_area=None,
+            pending_linen_profile=None,
+            pending_cleaning_type=None,
+            pending_room_key=None,
+            pending_floor4_mode=None,
+            pending_beds_max=None,
+        )
+        await state.set_state(BossStates.choosing_rooms)
+        sm = get_async_session_maker()
+        async with sm() as session:
+            text, kb = await build_rooms_screen(
+                session, data["current_employee"], selected, data.get("comment")
+            )
+        await cq.message.edit_text(text, reply_markup=kb)
+        await cq.answer()
+        return
+    await state.update_data(pending_floor4_mode="split_sep", pending_beds_max=2)
+    ct = format_cleaning_type(cleaning_type)
+    hdr = f"🛏️ <b>{rname}</b>\nКровати разъединены — белый комплект 1,5 сп.\n\n({ct})"
+    await show_floor4_beds_pick(cq, state, rname or "", 2, hdr)
+    await cq.answer()
+
+
+@router.callback_query(F.data == "f4bed_cancel", BossStates.selecting_floor4_beds_count)
+async def floor4_beds_pick_cancel(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mode = data.get("pending_floor4_mode")
+    rname = data.get("pending_room_name")
+    linen_profile = data.get("pending_linen_profile")
+    cleaning_type = data.get("pending_cleaning_type")
+    if mode == "split_sep" and rname and cleaning_type:
+        await state.update_data(pending_floor4_mode=None, pending_beds_max=None)
+        await state.set_state(BossStates.selecting_floor4_bed_layout)
+        cb = InlineKeyboardBuilder()
+        cb.row(
+            InlineKeyboardButton(text="Кровати разъединены", callback_data="f4bl_s"),
+            InlineKeyboardButton(text="Кровати соединены", callback_data="f4bl_j"),
+        )
+        cb.row(InlineKeyboardButton(text="🔙 Отмена", callback_data="f4lay_cancel"))
+        await cq.message.edit_text(
+            f"🛏️ Расположение кроватей для:\n<b>{rname}</b>\n\n({format_cleaning_type(cleaning_type)})",
+            reply_markup=cb.as_markup(),
+            parse_mode="HTML",
+        )
+        await cq.answer()
+        return
+    if mode == "color" and rname and linen_profile == "floor4":
+        await state.update_data(
+            pending_linen_variant=None,
+            pending_floor4_mode=None,
+            pending_beds_max=None,
+        )
+        await state.set_state(BossStates.selecting_linen_variant)
+        header, markup = build_linen_variant_markup_and_header(rname, "floor4")
+        await cq.message.edit_text(header, reply_markup=markup, parse_mode="HTML")
+        await cq.answer()
+        return
+    await state.set_state(BossStates.choosing_rooms)
+    await state.update_data(
+        pending_room_id=None,
+        pending_room_name=None,
+        pending_room_area=None,
+        pending_linen_profile=None,
+        pending_cleaning_type=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
+    )
+    sm = get_async_session_maker()
+    async with sm() as session:
+        text, kb = await build_rooms_screen(
+            session, data["current_employee"], data.get("selected_rooms", []), data.get("comment")
+        )
+    await cq.message.edit_text(text, reply_markup=kb)
+    await cq.answer()
+
+
+@router.callback_query(F.data.startswith("f4bn_"), BossStates.selecting_floor4_beds_count)
+async def floor4_beds_count_chosen(cq: CallbackQuery, state: FSMContext):
+    try:
+        n = int(cq.data.replace("f4bn_", ""))
+    except ValueError:
+        await cq.answer()
+        return
+    data = await state.get_data()
+    mode = data.get("pending_floor4_mode")
+    max_b = data.get("pending_beds_max") or 0
+    rid = data.get("pending_room_id")
+    rname = data.get("pending_room_name")
+    rarea = data.get("pending_room_area")
+    cleaning_type = data.get("pending_cleaning_type")
+    if n < 1 or n > max_b or rid is None or cleaning_type is None:
+        await cq.answer()
+        return
+    base = {
+        "id": rid,
+        "name": rname,
+        "area": rarea,
+        "cleaning_type": cleaning_type,
+        "linen_profile": "floor4",
+    }
+    if mode == "split_sep":
+        item = {
+            **base,
+            "bed_layout": "separated",
+            "linen_beds": n,
+            "linen_kit": scale_linen_by_beds(FLOOR4_SPLIT_SEPARATED_FULL, n, 2),
+        }
+    elif mode == "color":
+        variant = data.get("pending_linen_variant")
+        if variant not in (1, 2, 3, 4):
+            await cq.answer()
+            return
+        full = floor4_color_kit_full(variant, max_b)
+        item = {
+            **base,
+            "linen_variant": variant,
+            "linen_beds": n,
+            "linen_max_beds": max_b,
+            "linen_kit": scale_linen_by_beds(full, n, max_b),
+        }
+    else:
+        await cq.answer()
+        return
+    selected = list(data.get("selected_rooms", []))
+    selected.append(item)
+    await state.update_data(
+        selected_rooms=selected,
+        pending_room_id=None,
+        pending_room_name=None,
+        pending_room_area=None,
+        pending_linen_profile=None,
+        pending_cleaning_type=None,
+        pending_linen_variant=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
+    )
+    await state.set_state(BossStates.choosing_rooms)
     sm = get_async_session_maker()
     async with sm() as session:
         text, kb = await build_rooms_screen(
@@ -601,6 +892,9 @@ async def variant2_beds_chosen(cq: CallbackQuery, state: FSMContext):
         pending_linen_profile=None,
         pending_cleaning_type=None,
         pending_linen_variant=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
     )
     await state.set_state(BossStates.choosing_rooms)
     sm = get_async_session_maker()
@@ -671,6 +965,9 @@ async def linen_color_chosen(cq: CallbackQuery, state: FSMContext):
         pending_linen_profile=None,
         pending_cleaning_type=None,
         pending_linen_variant=None,
+        pending_room_key=None,
+        pending_floor4_mode=None,
+        pending_beds_max=None,
     )
     await state.set_state(BossStates.choosing_rooms)
     sm = get_async_session_maker()
@@ -1000,7 +1297,20 @@ async def history_detail(cq: CallbackQuery, state: FSMContext):
     for i, r in enumerate(rooms, 1):
         ct = format_cleaning_type(r.get("cleaning_type", "current"))
         extra = ""
-        if resolve_linen_profile(r) == "floor4" and r.get("linen_variant") is not None:
+        if resolve_linen_profile(r) == "floor4" and r.get("linen_kit"):
+            bits: list[str] = []
+            if r.get("bed_layout") == "separated":
+                bits.append("разъед.")
+            elif r.get("bed_layout") == "joined":
+                bits.append("соед.")
+            v = r.get("linen_variant")
+            if isinstance(v, int) and v in (1, 2, 3, 4):
+                bits.append(f"вар.{v}")
+            if r.get("linen_beds") is not None:
+                bits.append(f"{r['linen_beds']} кр.")
+            if bits:
+                extra = ", " + ", ".join(bits)
+        elif resolve_linen_profile(r) == "floor4" and r.get("linen_variant") is not None:
             lc = format_linen_color(r.get("linen_color"))
             if lc:
                 extra = f", комплект {r.get('linen_variant')} ({lc})"

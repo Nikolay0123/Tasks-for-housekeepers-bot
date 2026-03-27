@@ -9,7 +9,9 @@ class BossStates(StatesGroup):
     selecting_cleaning_type = State()  # выбор вида уборки для добавляемого номера
     selecting_linen_variant = State()  # вариант комплекта: 101–109 или 4 этаж (401–405)
     selecting_variant2_beds = State()  # вариант 2 (101–109): 1 или 2 кровати
-    selecting_linen_color = State()  # цвет белья для номеров 4 этажа
+    selecting_linen_color = State()  # цвет белья для номеров 4 этажа (старый сценарий)
+    selecting_floor4_bed_layout = State()  # 401.1 / … — разъединены или соединены
+    selecting_floor4_beds_count = State()  # 4 этаж: сколько кроватей заправить
     adding_comment = State()
     room_management = State()
     room_add_name = State()

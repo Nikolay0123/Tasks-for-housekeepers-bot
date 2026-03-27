@@ -35,6 +35,13 @@ def format_cleaning_type(key: str) -> str:
     return CLEANING_TYPES.get(key, key)
 
 
+def room_key_from_name(room_name: str) -> str | None:
+    """«Номер 401.1» → «401.1», «Номер 403» → «403»."""
+    if not isinstance(room_name, str) or not room_name.startswith("Номер "):
+        return None
+    return room_name.replace("Номер ", "").strip()
+
+
 def room_linen_profile(room_name: str) -> str | None:
     """
     None — без выбора комплекта белья в сценарии бота.
@@ -62,6 +69,140 @@ def room_linen_profile(room_name: str) -> str | None:
         minor = int(minor_s)
         if 1 <= minor <= 4:
             return "floor4"
+    return None
+
+
+# Номера 4 этажа: сначала «кровати разъединены / соединены», белые 1,5×2 или двуспальный комплект
+FLOOR4_SPLIT_BED_ROOMS: frozenset[str] = frozenset({"401.1", "402.4", "404.1", "405.4"})
+
+# Макс. кроватей в номере для вариантов расцветки 1–4 (не включает split-номера выше)
+FLOOR4_COLOR_MAX_BEDS: dict[str, int] = {}
+for _k in ("401.3", "401.4", "402.1", "402.2", "404.3", "404.4", "405.1"):
+    FLOOR4_COLOR_MAX_BEDS[_k] = 2
+for _k in ("401.2", "402.3", "404.2", "405.3"):
+    FLOOR4_COLOR_MAX_BEDS[_k] = 3
+for _k in ("403", "405.2"):
+    FLOOR4_COLOR_MAX_BEDS[_k] = 4
+
+# Вариант комплекта (1–4) → ключ цвета для блока «по цвету» в канале
+FLOOR4_VARIANT_TO_COLOR_KEY: dict[int, str] = {
+    1: "white",
+    2: "blue",
+    3: "gray",
+    4: "stripe",
+}
+
+# Единица белья на одну кровать (вариции расцветки по ТЗ)
+FLOOR4_COLOR_UNIT: dict[int, dict[str, int]] = {
+    1: {
+        "Простыня 1,5 спальная белая": 1,
+        "Пододеяльник 1,5 спальный белый": 1,
+        "Наволочка белая": 1,
+        "Полотенце банное": 1,
+        "Полотенце 40х70": 1,
+    },
+    2: {
+        "Простыня 1,5 спальная голубая": 1,
+        "Пододеяльник 1,5 спальный голубой": 1,
+        "Наволочка голубая": 1,
+        "Полотенце банное": 1,
+        "Полотенце 40х70": 1,
+    },
+    3: {
+        "Простыня 1,5 спальная серая": 1,
+        "Пододеяльник 1,5 спальный серый": 1,
+        "Наволочка серая": 1,
+        "Полотенце банное": 1,
+        "Полотенце 40х70": 1,
+    },
+    4: {
+        "Простыня 1,5 спальная в полоску": 1,
+        "Пододеяльник 1,5 спальный в полоску": 1,
+        "Наволочка в полоску": 1,
+        "Полотенце банное": 1,
+        "Полотенце 40х70": 1,
+    },
+}
+
+# 401.1 / …: разъединённые кровати — комплект 1,5 белый на две кровати (полный номер)
+FLOOR4_SPLIT_SEPARATED_FULL: dict[str, int] = {
+    "Простыня 1,5 спальная белая": 2,
+    "Пододеяльник 1,5 спальный белый": 2,
+    "Наволочка белая": 2,
+    "Полотенце банное": 2,
+    "Полотенце 40х70": 2,
+}
+
+FLOOR4_SPLIT_JOINED_KIT: dict[str, int] = {
+    "Простыня двуспальная белая": 1,
+    "Пододеяльник двуспальный белый": 1,
+    "Наволочка белая": 2,
+    "Полотенце банное": 2,
+    "Полотенце 40х70": 2,
+}
+
+
+def floor4_color_max_beds(room_key: str | None) -> int | None:
+    if not room_key:
+        return None
+    return FLOOR4_COLOR_MAX_BEDS.get(room_key)
+
+
+def floor4_color_kit_full(variant_id: int, max_beds: int) -> dict[str, int]:
+    unit = FLOOR4_COLOR_UNIT[variant_id]
+    return {k: v * max_beds for k, v in unit.items()}
+
+
+def scale_linen_by_beds(kit: dict[str, int], beds_to_make: int, max_beds: int) -> dict[str, int]:
+    if max_beds <= 0:
+        return dict(kit)
+    return {k: max(0, (q * beds_to_make) // max_beds) for k, q in kit.items()}
+
+
+def _legacy_floor4_pkg(item: dict) -> dict[str, int] | None:
+    """Старый формат: linen_variant ∈ {1,2,3} — множитель + linen_color."""
+    v = item.get("linen_variant")
+    if not isinstance(v, int) or v not in LINEN_PACKAGES_FLOOR4:
+        return None
+    if not item.get("linen_color"):
+        return None
+    return dict(LINEN_PACKAGES_FLOOR4[v])
+
+
+def item_linen_totals(item: dict) -> dict[str, int] | None:
+    """Словарь позиций белья для строки очереди (новый linen_kit, classic, старый floor4)."""
+    lk = item.get("linen_kit")
+    if isinstance(lk, dict) and lk:
+        return {str(k): int(v) for k, v in lk.items() if int(v) > 0}
+
+    prof = resolve_linen_profile(item)
+    if prof == "classic":
+        return classic_linen_quantities(item)
+
+    if prof == "floor4":
+        leg = _legacy_floor4_pkg(item)
+        if leg:
+            return leg
+    return None
+
+
+def item_linen_color_key(item: dict) -> str | None:
+    """
+    Ключ LINEN_COLORS для вклада в сводку «по цвету» (white / blue / …).
+    """
+    if item.get("linen_kit") and resolve_linen_profile(item) == "floor4":
+        rk = room_key_from_name(item.get("name") or "")
+        if rk and rk in FLOOR4_SPLIT_BED_ROOMS:
+            return "white"
+        v = item.get("linen_variant")
+        if isinstance(v, int) and v in FLOOR4_VARIANT_TO_COLOR_KEY:
+            return FLOOR4_VARIANT_TO_COLOR_KEY[v]
+        return None
+    ck = item.get("linen_color")
+    if ck in LINEN_COLORS:
+        return ck
+    if resolve_linen_profile(item) == "classic" and item_linen_totals(item):
+        return "white"
     return None
 
 
